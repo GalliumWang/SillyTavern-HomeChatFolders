@@ -1,0 +1,18 @@
+{
+  "display_name": "首页会话文件夹",
+  "loading_order": 100,
+  "requires": [],
+  "optional": [],
+  "js": "index.js",
+  "css": "style.css",
+  "author": "GalliumWang",
+  "homePage": "https://github.com/GalliumWang/SillyTavern-HomeChatFolders",
+  "version": "0.1.0",
+  "minimum_client_version": "1.19.0",
+  "auto_update": false,
+  "hooks": {
+    "activate": "onActivate",
+    "disable": "onDisable",
+    "delete": "onDisable"
+  }
+}

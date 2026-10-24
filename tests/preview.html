@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>首页会话文件夹 · 开发验证</title>
+  <link rel="stylesheet" href="/style.css">
+  <style>
+    :root { color-scheme:dark; --SmartThemeBodyColor:#e9e6f0; --SmartThemeQuoteColor:#b7a4ff; --SmartThemeBlurTintColor:#23222b; --SmartThemeBorderColor:#ffffff1d; }
+    * { box-sizing:border-box } body { font-family:system-ui,"Microsoft YaHei",sans-serif; background:#17161d; color:#e9e6f0; margin:0; padding:24px }
+    .preview-top { max-width:1100px; margin:0 auto 18px; display:flex; gap:12px; align-items:center; flex-wrap:wrap; font-size:12px; color:#b7b1c4 }
+    .preview-top strong { color:#e9e6f0 } .preview-top button { color:inherit; background:#292632; border:1px solid #ffffff25; padding:7px 10px; border-radius:6px; cursor:pointer }
+    #chat { max-width:1100px; margin:auto; padding:22px; border-radius:18px; background:#23222b; box-shadow:0 12px 70px #0004 }
+    .welcomeHeaderTitle { display:flex; align-items:center; gap:10px; font-size:13px; opacity:.6 } .welcomeHeaderLogo { width:24px }
+    .welcomeHeader { display:flex; justify-content:space-between; margin-top:14px; font-size:12px; color:#aaa2bb } .welcomeShortcuts { margin-left:auto }
+    .welcomeRecent { padding:25px; border:1px dashed #aaa; margin-top:20px }
+    #extensions_settings { max-width:1100px; margin:20px auto }
+    .preview-chat { padding:30px; font-size:16px; line-height:2 }
+    #preview-log { max-width:1100px; margin:12px auto; font-size:12px; color:#9b94a9; white-space:pre-wrap }
+    @media(max-width:700px) { body { padding:10px } #chat { padding:12px } }
+  </style>
+</head>
+<body>
+  <div class="preview-top"><strong>开发验证环境</strong><span>模拟 137 个跨角色会话，不含真实聊天</span><button id="return-home">返回首页</button><button id="toggle-failure">模拟接口失败：关</button><button id="reset-demo">重置演示分类</button></div>
+  <main id="chat"></main>
+  <div id="preview-log" role="status"></div>
+  <aside id="extensions_settings"></aside>
+  <script type="module" src="/tests/mock-core.js"></script>
+</body>
+</html>
