@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { ChatRepository, normalizeCatalog, openChat } from '../src/repository.js';
+import { ChatRepository, normalizeCatalog, openChat, deleteChat } from '../src/repository.js';
 import { chatKey } from '../src/model.js';
 const context = () => ({
     characters: [{ avatar: '甲.png', name: '甲' }], groups: [{ id: 'g1', name: '群聊', chats: ['旧档'] }],
@@ -12,6 +12,84 @@ const rows = [
     { group: 'g1', file_name: '旧档.jsonl', last_mes: '2025-01-02T00:00:00Z', chat_items: 2 },
     { avatar: '不存在.png', file_name: '孤立.jsonl' }, { file_name: '无角色.jsonl' },
 ];
+
+function deletionContext() {
+    const ctx = context(); const handlers = new Map();
+    ctx.getCurrentChatId = () => undefined;
+    ctx.eventTypes = { CHAT_DELETED: 'character', GROUP_CHAT_DELETED: 'group' };
+    ctx.eventSource = {
+        on: (event, fn) => handlers.set(event, fn),
+        removeListener: (event, fn) => { assert.equal(handlers.get(event), fn); handlers.delete(event); },
+        emit: (event, name) => handlers.get(event)?.(name),
+    };
+    return { ctx, handlers };
+}
+
+test('character deletion passes the exact owner index and filename to core and requires its success event', async () => {
+    const { ctx, handlers } = deletionContext();
+    const chat = { kind: 'character', owner: '甲.png', name: '旧档' };
+    await deleteChat(chat, () => ctx, async url => {
+        assert.equal(url, '/script.js');
+        return { deleteCharacterChatByName: async (id, name) => {
+            assert.equal(id, '0'); assert.equal(name, '旧档'); ctx.eventSource.emit('character', name);
+        } };
+    });
+    assert.equal(handlers.size, 0);
+    await assert.rejects(deleteChat(chat, () => ctx, async () => ({ deleteCharacterChatByName: async () => {} })), /未确认删除/);
+    assert.equal(handlers.size, 0);
+});
+
+test('successful group deletion uses the native group ID, preserves the core update, and ignores character namesakes', async () => {
+    const { ctx, handlers } = deletionContext(); ctx.groups[0].id = 42;
+    const chat = { kind: 'group', owner: '42', name: '旧档' };
+    await deleteChat(chat, () => ctx, async url => {
+        assert.equal(url, '/scripts/group-chats.js');
+        return { deleteGroupChatByName: async (id, name) => {
+            assert.equal(id, 42); assert.equal(name, '旧档');
+            ctx.groups[0].chats = []; ctx.eventSource.emit('group', name);
+        } };
+    });
+    assert.deepEqual(ctx.groups[0].chats, []); assert.equal(handlers.size, 0);
+});
+
+test('failed native group deletion restores optimistic membership and active-chat pointer', async () => {
+    for (const throws of [false, true]) {
+        const { ctx, handlers } = deletionContext(); const group = ctx.groups[0];
+        group.chats = ['前', '旧档', '后']; group.chat_id = '旧档';
+        await assert.rejects(deleteChat({ kind: 'group', owner: 'g1', name: '旧档' }, () => ctx, async () => ({
+            deleteGroupChatByName: async () => {
+                group.chats.splice(1, 1); group.chat_id = '后';
+                if (throws) throw new Error('网络断开');
+            },
+        })), /未确认删除|网络断开/);
+        assert.deepEqual(group.chats, ['前', '旧档', '后']); assert.equal(group.chat_id, '旧档'); assert.equal(handlers.size, 0);
+    }
+});
+
+test('deletion refuses missing owners, missing group membership, and a chat opened while imports load', async () => {
+    const { ctx } = deletionContext();
+    const never = async () => ({ deleteCharacterChatByName: () => assert.fail('must not delete'), deleteGroupChatByName: () => assert.fail('must not delete') });
+    await assert.rejects(deleteChat({ kind: 'character', owner: '不存在.png', name: '旧档' }, () => ctx, never), /已改变/);
+    await assert.rejects(deleteChat({ kind: 'group', owner: 'g1', name: '不存在' }, () => ctx, never), /已改变/);
+    await assert.rejects(deleteChat({ kind: 'character', owner: '甲.png', name: '旧档' }, () => ctx, async () => {
+        ctx.getCurrentChatId = () => '刚打开的聊天'; return never();
+    }), /其他会话/);
+});
+
+test('an unrelated native deletion event is not accepted as confirmation', async () => {
+    const { ctx, handlers } = deletionContext();
+    await assert.rejects(deleteChat({ kind: 'character', owner: '甲.png', name: '旧档' }, () => ctx, async () => ({
+        deleteCharacterChatByName: async () => ctx.eventSource.emit('character', '其他档'),
+    })), /未确认删除/);
+    assert.equal(handlers.size, 0);
+});
+
+test('a later event subscriber error cannot undo confirmed deletion', async () => {
+    const { ctx } = deletionContext();
+    await deleteChat({ kind: 'character', owner: '甲.png', name: '旧档' }, () => ctx, async () => ({
+        deleteCharacterChatByName: async (_, name) => { ctx.eventSource.emit('character', name); throw new Error('other extension'); },
+    }));
+});
 test('normalizes native recent payload and skips unsupported orphans instead of opening a wrong character', () => {
     const data = normalizeCatalog(rows, context());
     assert.equal(data.chats.length, 2); assert.equal(data.skipped, 2);

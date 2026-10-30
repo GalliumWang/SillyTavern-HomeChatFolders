@@ -2,7 +2,7 @@ import {
     SETTINGS_KEY, ALL, UNFILED, COLORS, uid, defaults, validate, copy, exportState,
     folderPath, descendants, upsertFolder, deleteFolder, assignChats, visibleChats, parseKey, chatKey, remapKeys,
 } from './model.js';
-import { ChatRepository, openChat } from './repository.js';
+import { ChatRepository, openChat, deleteChat } from './repository.js';
 
 function element(tag, className, text) {
     const el = document.createElement(tag);
@@ -29,10 +29,11 @@ function download(text, name) {
 }
 
 export class HomeFolders {
-    constructor(getContext, { repository, opener = openChat } = {}) {
+    constructor(getContext, { repository, opener = openChat, deleter = deleteChat } = {}) {
         this.getContext = getContext;
         this.repository = repository ?? new ChatRepository(getContext);
         this.opener = opener;
+        this.deleter = deleter;
         this.state = null;
         this.panel = null;
         this.root = null;
@@ -48,6 +49,7 @@ export class HomeFolders {
         this.started = false;
         this.stopped = false;
         this.opening = false;
+        this.deleting = false;
         this.listeners = [];
         this.dialogs = new Set();
         this.scanTimer = null;
@@ -226,8 +228,8 @@ export class HomeFolders {
         this.root.append(header, this.status, layout);
     }
     async refresh() {
-        if (this.loading || this.stopped) return;
-        this.loading = true; this.error = ''; this.notice = ''; this.renderStatus();
+        if (this.loading || this.deleting || this.stopped) return;
+        this.loading = true; this.error = ''; this.notice = ''; this.renderList(); this.renderStatus();
         const revision = this.catalogRevision;
         try {
             if (!this.repository.lastLoaded) {
@@ -256,7 +258,7 @@ export class HomeFolders {
         this.status.classList.toggle('hcf-error', Boolean(this.error));
         this.statusMessage.textContent = this.error || (this.loading ? (this.notice || '正在读取会话目录，长聊天较多时可能需要一些时间…') :
             `已载入 ${repo.chats.length} 个会话${repo.complete ? '' : '（历史目录尚未完整载入）'}${repo.skipped ? ` · ${repo.skipped} 个无关联角色或特殊会话未显示` : ''}${this.notice ? ` · ${this.notice}` : ''}`);
-        this.refreshButton.disabled = this.loading;
+        this.refreshButton.disabled = this.loading || this.deleting;
         this.refreshButton.textContent = this.loading ? '读取中…' : '刷新目录';
         const missing = this.missing();
         this.missingButton.hidden = !missing.length;
@@ -338,12 +340,15 @@ export class HomeFolders {
         const selectAll = element('input'); selectAll.type = 'checkbox'; selectAll.setAttribute('aria-label', '选择本页会话');
         selectAll.checked = rows.length > 0 && rows.every(c => this.selected.has(c.key));
         selectAll.indeterminate = !selectAll.checked && rows.some(c => this.selected.has(c.key));
-        selectAll.disabled = !rows.length;
+        selectAll.disabled = !rows.length || this.deleting;
         selectAll.addEventListener('change', () => { for (const c of rows) { if (selectAll.checked) this.selected.add(c.key); else this.selected.delete(c.key); } this.renderList(); });
         this.selectionBar.append(labeled('选本页', selectAll), element('span', '', `已选 ${this.selected.size}`));
         const move = button('移动到…', '将选中的会话放入文件夹', () => this.moveDialog([...this.selected])); move.disabled = !this.selected.size;
         const clear = button('清空选择', '', () => { this.selected.clear(); this.renderList(); }); clear.disabled = !this.selected.size;
-        this.selectionBar.append(move, clear);
+        const remove = button('删除所选', '永久删除选中的聊天记录', () => this.deleteChats([...this.selected]), 'hcf-danger');
+        remove.disabled = !this.selected.size || this.loading || this.opening || this.deleting;
+        move.disabled ||= this.deleting; clear.disabled ||= this.deleting;
+        this.selectionBar.append(move, remove, clear);
         this.list.replaceChildren();
         if (!rows.length) {
             const empty = element('div', 'hcf-empty');
@@ -354,24 +359,29 @@ export class HomeFolders {
             this.list.append(empty);
         }
         for (const chat of rows) {
-            const item = element('article', 'hcf-chat'); item.draggable = true;
+            const item = element('article', 'hcf-chat'); item.draggable = !this.deleting;
             const check = element('input'); check.type = 'checkbox'; check.checked = this.selected.has(chat.key); check.setAttribute('aria-label', `选择 ${chat.character}：${chat.name}`);
+            check.disabled = this.deleting;
             check.addEventListener('change', () => { if (check.checked) this.selected.add(chat.key); else this.selected.delete(chat.key); this.renderList(); });
             const avatar = element('div', 'hcf-avatar');
             if (typeof chat.avatar === 'string' && chat.avatar) {
                 const img = element('img'); img.src = chat.avatar; img.alt = ''; img.loading = 'lazy';
                 img.addEventListener('error', () => { avatar.textContent = chat.character.slice(0, 1); }, { once: true }); avatar.append(img);
             } else avatar.textContent = chat.kind === 'group' ? '群' : chat.character.slice(0, 1);
-            const open = button('', `继续会话：${chat.name}`, () => this.open(chat), 'hcf-open'); open.disabled = this.opening;
+            const open = button('', `继续会话：${chat.name}`, () => this.open(chat), 'hcf-open'); open.disabled = this.opening || this.deleting;
             open.append(element('span', 'hcf-character', chat.character), element('strong', 'hcf-chat-name', chat.name));
             const date = chat.timestamp ? new Date(chat.timestamp).toLocaleString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '时间未知';
             const folder = this.state.assignments[chat.key];
             const details = `${date} · ${chat.messageCount} 条${chat.fileSize ? ` · ${chat.fileSize}` : ''} · ${folder ? folderPath(this.state, folder) : '未分类'}`;
             open.append(element('span', 'hcf-chat-meta', details));
             if (this.state.preferences.previews && chat.preview) open.append(element('span', 'hcf-preview', chat.preview));
-            item.append(check, avatar, open, button('移入', '移动此会话到文件夹', () => this.moveDialog([chat.key]), 'hcf-row-move'));
+            const actions = element('div', 'hcf-row-actions');
+            const moveOne = button('移入', '移动此会话到文件夹', () => this.moveDialog([chat.key]), 'hcf-row-move'); moveOne.disabled = this.deleting;
+            const deleteOne = button('删除', `永久删除：${chat.character} / ${chat.name}`, () => this.deleteChats([chat.key]), 'hcf-danger hcf-row-delete');
+            deleteOne.disabled = this.loading || this.opening || this.deleting;
+            actions.append(moveOne, deleteOne); item.append(check, avatar, open, actions);
             item.addEventListener('dragstart', event => {
-                if (event.target.closest?.('input, .hcf-row-move')) { event.preventDefault(); return; }
+                if (this.deleting || event.target.closest?.('input, .hcf-row-actions')) { event.preventDefault(); return; }
                 const keys = this.selected.has(chat.key) ? [...this.selected] : [chat.key];
                 event.dataTransfer.setData('application/x-hcf-chats', JSON.stringify(keys)); event.dataTransfer.effectAllowed = 'move';
             });
@@ -384,7 +394,7 @@ export class HomeFolders {
         this.pagination.append(previous, element('span', '', `${this.page} / ${pages}`), next);
     }
     async open(chat) {
-        if (this.opening || this.stopped) return;
+        if (this.opening || this.deleting || this.stopped) return;
         this.opening = true; this.renderList();
         try { await this.opener(chat, () => {
             if (this.stopped || !this.state.enabled) throw new Error('首页文件夹已关闭，已取消打开会话。');
@@ -394,8 +404,57 @@ export class HomeFolders {
         finally { this.opening = false; this.renderList(); }
     }
     move(keys, folder) {
+        if (this.deleting) return;
         this.commit(s => assignChats(s, keys, folder));
         this.selected.clear(); this.notice = `已移动 ${keys.length} 个会话`; this.render();
+    }
+    async deleteChats(keys) {
+        if (this.deleting || this.opening || this.loading || this.stopped || !this.state.enabled) return;
+        const unique = [...new Set(keys)];
+        if (!unique.length) return;
+        const catalog = new Map(this.repository.chats.map(chat => [chat.key, chat]));
+        const chats = unique.map(key => catalog.get(key));
+        if (chats.some(chat => !chat)) { this.showError(new Error('部分会话已改变，请刷新目录后重新选择。')); return; }
+        this.deleting = true; this.renderList(); this.renderStatus();
+        const deleted = [];
+        let failure;
+        try {
+            const names = chats.slice(0, 10).map(chat => `${chat.character} / ${chat.name}`).join('\n');
+            const ok = await this.confirm(`永久删除 ${chats.length} 个会话`,
+                `将永久删除以下聊天记录，无法通过分类备份恢复。请先在酒馆备份需要保留的聊天。\n\n${names}${chats.length > 10 ? `\n……另有 ${chats.length - 10} 个会话（包含跨页选择）` : ''}`, '永久删除');
+            if (!ok) return;
+            this.error = ''; this.notice = `正在删除 0 / ${chats.length} 个会话…`; this.renderStatus();
+            for (const chat of chats) {
+                const getContext = () => {
+                    if (this.stopped || !this.state.enabled) throw new Error('首页文件夹已关闭，已停止删除。');
+                    const context = this.getContext();
+                    if (context.getCurrentChatId?.() !== undefined) throw new Error('页面已切换到其他会话，已停止删除。');
+                    if (!this.repository.chats.includes(chat)) throw new Error('会话目录已改变，请刷新后重新选择。');
+                    return context;
+                };
+                getContext();
+                await this.deleter(chat, getContext);
+                deleted.push(chat.key);
+                this.repository.chats = this.repository.chats.filter(c => c.key !== chat.key);
+                this.selected.delete(chat.key);
+                this.notice = `正在删除 ${deleted.length} / ${chats.length} 个会话…`; this.render();
+            }
+        } catch (error) { failure = error; }
+        finally {
+            if (deleted.length) {
+                // Apply cleanup to the newest settings, preserving unrelated edits.
+                try {
+                    const stored = this.getContext().extensionSettings[SETTINGS_KEY];
+                    if (stored && stored.revision !== this.state.revision) this.state = validate(stored);
+                    this.commit(s => { for (const key of deleted) delete s.assignments[key]; return s; });
+                } catch (error) { failure = new Error(`聊天已删除，但分类清理未完成：${error.message}`); }
+                this.invalidate();
+                this.notice = `已永久删除 ${deleted.length} 个会话`;
+            }
+            this.deleting = false;
+            if (failure) this.showError(new Error(`已删除 ${deleted.length} 个，${chats.length - deleted.length} 个未确认删除。${failure.message}`));
+            if (!this.stopped) this.render();
+        }
     }
     dialog(title) {
         const overlay = element('div', 'hcf-overlay');
@@ -435,6 +494,7 @@ export class HomeFolders {
     async confirm(title, message, label = '确定') {
         return new Promise(resolve => {
             const dialog = this.dialog(title);
+            dialog.body.classList.add('hcf-confirm-message');
             dialog.body.append(element('p', '', message));
             const close = dialog.close; dialog.close = () => { close(); resolve(false); };
             dialog.footer.replaceChildren(button('取消', '', dialog.close), button(label, '', () => { close(); resolve(true); }, 'hcf-primary'));

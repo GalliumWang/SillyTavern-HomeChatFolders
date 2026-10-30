@@ -25,6 +25,17 @@ context.getCurrentChatId = context.getCurrentChatId.bind(context);
 export function setActiveCharacter() {}
 export function setActiveGroup() {}
 export async function openGroupById(id) { context.groupId = id; context.characterId = undefined; context.chatId = 'default'; return true; }
+export async function deleteCharacterChatByName(id, name) {
+    const response = await fetch('/api/chats/delete', { method: 'POST', headers: context.getRequestHeaders(), body: JSON.stringify({ avatar_url: context.characters[id].avatar, chatfile: `${name}.jsonl` }) });
+    if (response.ok) await emitter.emit(types.CHAT_DELETED, name);
+}
+export async function deleteGroupChatByName(id, name) {
+    const group = context.groups.find(g => g.id === id);
+    if (!group?.chats.includes(name)) return;
+    group.chats.splice(group.chats.indexOf(name), 1);
+    const response = await fetch('/api/chats/group/delete', { method: 'POST', headers: context.getRequestHeaders(), body: JSON.stringify({ id: name }) });
+    if (response.ok) await emitter.emit(types.GROUP_CHAT_DELETED, name);
+}
 globalThis.SillyTavern = { getContext: () => context };
 globalThis.toastr = { error: message => { document.getElementById('preview-log').textContent = `提示：${message}`; } };
 const chapterNames = ['雨夜的重逢', '旧城漫游', '星河与灯火', '午后的来信', '旅行手记', '未完成的约定', '夏日散步', '另一种结局'];
@@ -39,6 +50,15 @@ for (const name of context.groups[0].chats) rows.push({ group: 'g1', file_name: 
 const originalFetch = globalThis.fetch.bind(globalThis);
 let failure = false; let requests = 0;
 globalThis.fetch = async (url, init) => {
+    if (url === '/api/chats/delete' || url === '/api/chats/group/delete') {
+        await new Promise(resolve => setTimeout(resolve, 200));
+        if (failure) return new Response('{}', { status: 503 });
+        const body = JSON.parse(init.body);
+        const index = rows.findIndex(row => url === '/api/chats/delete' ? row.avatar === body.avatar_url && row.file_name === body.chatfile : row.group && row.file_name === `${body.id}.jsonl`);
+        if (index < 0) return new Response('{}', { status: 404 });
+        rows.splice(index, 1);
+        return new Response('{"ok":true}', { headers: { 'Content-Type': 'application/json' } });
+    }
     if (url !== '/api/chats/recent') return originalFetch(url, init);
     requests++;
     const request = JSON.parse(init.body);

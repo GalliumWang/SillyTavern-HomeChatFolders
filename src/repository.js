@@ -114,3 +114,43 @@ export async function openChat(chat, getContext, imports = url => import(url)) {
     context.saveSettingsDebounced();
     if (context.getCurrentChatId() !== chat.name) throw new Error('会话未成功打开，请刷新目录后重试。');
 }
+
+// Core's delete helpers update the character's default chat / group's chat list,
+// but return undefined even on HTTP errors. Only their native success event
+// confirms deletion; a resolved promise alone must never remove a catalog row.
+export async function deleteChat(chat, getContext, imports = url => import(url)) {
+    const assertHome = () => {
+        const context = getContext();
+        if (context.getCurrentChatId?.() !== undefined) throw new Error('页面已进入其他会话，请返回首页后重试。');
+        return context;
+    };
+    assertHome();
+    if (!['character', 'group'].includes(chat.kind) || !chat.owner || !chat.name) throw new Error('无效的会话。');
+    const module = await imports(chat.kind === 'group' ? '/scripts/group-chats.js' : '/script.js');
+    const context = assertHome();
+    const group = chat.kind === 'group' ? context.groups.find(g => String(g.id) === chat.owner) : null;
+    const characterId = chat.kind === 'character' ? context.characters.findIndex(c => c.avatar === chat.owner) : -1;
+    if (chat.kind === 'group' ? !group?.chats?.includes(chat.name) : characterId < 0) throw new Error('角色或群聊已改变，请刷新目录。');
+    const event = context.eventTypes[chat.kind === 'group' ? 'GROUP_CHAT_DELETED' : 'CHAT_DELETED'];
+    const remove = chat.kind === 'group' ? module.deleteGroupChatByName : module.deleteCharacterChatByName;
+    if (!event || typeof remove !== 'function') throw new Error('酒馆删除 API 不可用；本版面向 SillyTavern 1.19.0。');
+    const index = group?.chats.indexOf(chat.name);
+    const previousChatId = group?.chat_id;
+    let deleted = false;
+    const onDeleted = name => { if (name === chat.name) deleted = true; };
+    context.eventSource.on(event, onDeleted);
+    try {
+        await remove(chat.kind === 'group' ? group.id : String(characterId), chat.name);
+        if (!deleted) throw new Error('酒馆未确认删除成功，请检查服务器连接并刷新目录后重试。');
+    } catch (error) {
+        if (!deleted) throw error;
+    } finally {
+        context.eventSource.removeListener(event, onDeleted);
+        // 1.19.0 removes membership before sending the group DELETE request.
+        // Restore that optimistic change when deletion was not confirmed.
+        if (group && !deleted && !group.chats.includes(chat.name)) {
+            group.chats.splice(index, 0, chat.name);
+            group.chat_id = previousChatId;
+        }
+    }
+}

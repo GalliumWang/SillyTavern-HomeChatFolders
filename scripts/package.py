@@ -7,7 +7,7 @@ root = Path(__file__).resolve().parents[1]
 version = json.loads((root / 'manifest.json').read_text(encoding='utf-8'))['version']
 output = root / 'dist' / f'SillyTavern-HomeChatFolders-v{version}.zip'
 output.parent.mkdir(exist_ok=True)
-files = [root / name for name in ('manifest.json', 'index.js', 'style.css', 'README.md', 'LICENSE')]
+files = [root / name for name in ('manifest.json', 'index.js', 'style.css', 'README.md', 'CHANGELOG.md', 'LICENSE')]
 files += sorted((root / 'src').glob('*.js'))
 with zipfile.ZipFile(output, 'w', zipfile.ZIP_DEFLATED) as archive:
     for file in files:
