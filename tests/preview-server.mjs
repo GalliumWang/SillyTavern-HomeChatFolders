@@ -9,7 +9,7 @@ http.createServer(async (req, res) => {
         const url = new URL(req.url, 'http://127.0.0.1');
         let route = decodeURIComponent(url.pathname);
         if (route === '/') route = '/tests/preview.html';
-        if (route === '/script.js' || route === '/scripts/group-chats.js') {
+        if (route === '/script.js' || route === '/scripts/group-chats.js' || route === '/group-chats.js') {
             res.writeHead(200, { 'Content-Type': 'text/javascript;charset=utf-8' });
             res.end('export * from "/tests/mock-core.js";'); return;
         }

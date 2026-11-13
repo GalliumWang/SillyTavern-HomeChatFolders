@@ -1,7 +1,13 @@
 // Development-only fixture. This file is never included in the install ZIP.
+import { sanitizeChatName } from '../src/model.js';
+
 const handlers = new Map();
-const types = Object.fromEntries(['APP_READY', 'CHAT_CHANGED', 'SETTINGS_UPDATED', 'CHAT_RENAMED', 'CHARACTER_RENAMED', 'CHAT_CREATED', 'CHAT_DELETED',
-    'GROUP_CHAT_CREATED', 'GROUP_CHAT_DELETED', 'CHARACTER_DELETED', 'MESSAGE_SENT', 'MESSAGE_RECEIVED', 'MESSAGE_EDITED'].map(x => [x, x.toLowerCase()]));
+const types = Object.fromEntries([
+    'APP_READY', 'CHAT_CHANGED', 'SETTINGS_UPDATED', 'CHAT_RENAMED', 'CHARACTER_RENAMED',
+    'CHAT_CREATED', 'CHAT_DELETED', 'GROUP_CHAT_CREATED', 'GROUP_CHAT_DELETED',
+    'CHARACTER_DELETED', 'CHARACTER_EDITED', 'GROUP_UPDATED',
+    'MESSAGE_SENT', 'MESSAGE_RECEIVED', 'MESSAGE_EDITED', 'MESSAGE_DELETED', 'MESSAGE_SWIPED',
+].map(x => [x, x.toLowerCase()]));
 const emitter = {
     on(type, handler) { const all = handlers.get(type) ?? []; all.push(handler); handlers.set(type, all); },
     removeListener(type, handler) { handlers.set(type, (handlers.get(type) ?? []).filter(x => x !== handler)); },
@@ -9,11 +15,13 @@ const emitter = {
 };
 const stored = localStorage.getItem('hcf-preview-settings');
 export const context = {
-    characters: [{ avatar: 'lin.png', name: '林间旅人' }, { avatar: 'city.png', name: '城市来信' }, { avatar: 'sea.png', name: '海边书店' }],
+    accountStorage: localStorage,
+    characters: [{ avatar: 'lin.png', name: '林间旅人', chat: '默认档' }, { avatar: 'city.png', name: '城市来信', chat: '默认档' }, { avatar: 'sea.png', name: '海边书店', chat: '默认档' }],
     groups: [{ id: 'g1', name: '冒险小队', chats: ['远行的第一天', '营火夜谈', '最后一封信'] }],
     extensionSettings: stored ? JSON.parse(stored) : {}, eventTypes: types, eventSource: emitter,
     characterId: undefined, groupId: null, chatId: undefined,
     getCurrentChatId() { return this.chatId; },
+    async getCharacters() {},
     getRequestHeaders() { return { 'Content-Type': 'application/json', 'X-CSRF-Token': 'fixture' }; },
     getThumbnailUrl() { return '/tests/avatar.svg'; },
     saveSettingsDebounced() { localStorage.setItem('hcf-preview-settings', JSON.stringify(context.extensionSettings)); },
@@ -24,17 +32,42 @@ export const context = {
 context.getCurrentChatId = context.getCurrentChatId.bind(context);
 export function setActiveCharacter() {}
 export function setActiveGroup() {}
+export async function updateRemoteChatName(id, name) { if (context.characters[id]) context.characters[id].chat = name; }
 export async function openGroupById(id) { context.groupId = id; context.characterId = undefined; context.chatId = 'default'; return true; }
 export async function deleteCharacterChatByName(id, name) {
-    const response = await fetch('/api/chats/delete', { method: 'POST', headers: context.getRequestHeaders(), body: JSON.stringify({ avatar_url: context.characters[id].avatar, chatfile: `${name}.jsonl` }) });
+    const response = await fetch('api/chats/delete', { method: 'POST', headers: context.getRequestHeaders(), body: JSON.stringify({ avatar_url: context.characters[id].avatar, chatfile: `${name}.jsonl` }) });
     if (response.ok) await emitter.emit(types.CHAT_DELETED, name);
 }
 export async function deleteGroupChatByName(id, name) {
     const group = context.groups.find(g => g.id === id);
     if (!group?.chats.includes(name)) return;
     group.chats.splice(group.chats.indexOf(name), 1);
-    const response = await fetch('/api/chats/group/delete', { method: 'POST', headers: context.getRequestHeaders(), body: JSON.stringify({ id: name }) });
+    const response = await fetch('api/chats/group/delete', { method: 'POST', headers: context.getRequestHeaders(), body: JSON.stringify({ id: name }) });
     if (response.ok) await emitter.emit(types.GROUP_CHAT_DELETED, name);
+}
+export async function renameGroupOrCharacterChat({ characterId, groupId, oldFileName, newFileName }) {
+    const sanitized = sanitizeChatName(newFileName);
+    if (!sanitized || failure) return;
+    if (groupId) {
+        const group = context.groups.find(g => String(g.id) === String(groupId));
+        const idx = group?.chats.indexOf(oldFileName) ?? -1;
+        if (idx < 0) return;
+        group.chats[idx] = sanitized;
+        const row = rows.find(r => String(r.group) === String(groupId) && r.file_name === `${oldFileName}.jsonl`);
+        if (row) row.file_name = `${sanitized}.jsonl`;
+    } else {
+        const avatar = context.characters[characterId]?.avatar;
+        const row = rows.find(r => r.avatar === avatar && r.file_name === `${oldFileName}.jsonl`);
+        if (!row) return;
+        row.file_name = `${sanitized}.jsonl`;
+    }
+    // Mirrors SillyTavern 1.19.0 public/script.js:10716 emitting unsanitized renamed_file
+    await emitter.emit(types.CHAT_RENAMED, {
+        avatarId: groupId ? undefined : context.characters[characterId]?.avatar,
+        groupId,
+        oldFileName: `${oldFileName}.jsonl`,
+        newFileName: `${newFileName.trim()}.jsonl`,
+    });
 }
 globalThis.SillyTavern = { getContext: () => context };
 globalThis.toastr = { error: message => { document.getElementById('preview-log').textContent = `提示：${message}`; } };
@@ -50,16 +83,17 @@ for (const name of context.groups[0].chats) rows.push({ group: 'g1', file_name: 
 const originalFetch = globalThis.fetch.bind(globalThis);
 let failure = false; let requests = 0;
 globalThis.fetch = async (url, init) => {
-    if (url === '/api/chats/delete' || url === '/api/chats/group/delete') {
+    const cleanUrl = String(url).replace(/^\//, '');
+    if (cleanUrl === 'api/chats/delete' || cleanUrl === 'api/chats/group/delete') {
         await new Promise(resolve => setTimeout(resolve, 200));
         if (failure) return new Response('{}', { status: 503 });
         const body = JSON.parse(init.body);
-        const index = rows.findIndex(row => url === '/api/chats/delete' ? row.avatar === body.avatar_url && row.file_name === body.chatfile : row.group && row.file_name === `${body.id}.jsonl`);
+        const index = rows.findIndex(row => cleanUrl === 'api/chats/delete' ? row.avatar === body.avatar_url && row.file_name === body.chatfile : row.group && row.file_name === `${body.id}.jsonl`);
         if (index < 0) return new Response('{}', { status: 404 });
         rows.splice(index, 1);
         return new Response('{"ok":true}', { headers: { 'Content-Type': 'application/json' } });
     }
-    if (url !== '/api/chats/recent') return originalFetch(url, init);
+    if (cleanUrl !== 'api/chats/recent') return originalFetch(url, init);
     requests++;
     const request = JSON.parse(init.body);
     document.getElementById('preview-log').textContent = `目录请求 ${requests} 次；最近一次：${request.max ?? '完整目录'}；模拟 CSRF：${init.headers['X-CSRF-Token']}`;

@@ -7,12 +7,14 @@
   "css": "style.css",
   "author": "GalliumWang",
   "homePage": "https://github.com/GalliumWang/SillyTavern-HomeChatFolders",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "minimum_client_version": "1.19.0",
   "auto_update": false,
   "hooks": {
     "activate": "onActivate",
+    "enable": "onActivate",
     "disable": "onDisable",
-    "delete": "onDisable"
+    "delete": "onDisable",
+    "clean": "onClean"
   }
 }
